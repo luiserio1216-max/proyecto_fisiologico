@@ -22,8 +22,9 @@ import argparse
 import asyncio
 import json
 import logging
+import socket
 import time
-from typing import Set
+from typing import List, Set
 
 import websockets
 from websockets.legacy.server import WebSocketServerProtocol
@@ -112,6 +113,46 @@ class EcgServer:
                 next_deadline = loop.time()
 
 
+def _local_ipv4_addresses() -> List[str]:
+    """Return non-loopback IPv4 addresses bound to this host.
+
+    Useful for telling phones on the same WiFi which URL to type into the
+    Flutter app's connection screen.
+    """
+    addrs: List[str] = []
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, family=socket.AF_INET):
+            ip = info[4][0]
+            if ip and not ip.startswith("127.") and ip not in addrs:
+                addrs.append(ip)
+    except OSError:
+        pass
+    if not addrs:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+                if ip and not ip.startswith("127."):
+                    addrs.append(ip)
+        except OSError:
+            pass
+    return addrs
+
+
+def _print_connection_help(host: str, port: int) -> None:
+    if host not in ("0.0.0.0", ""):
+        print(f"\n  → URL para la app:  ws://{host}:{port}\n")
+        return
+    ips = _local_ipv4_addresses()
+    print()
+    print("  Conecta la app a una de estas URLs (la que coincida con tu WiFi):")
+    print(f"    ws://localhost:{port}    ← desde la misma máquina (linux/macOS)")
+    for ip in ips:
+        print(f"    ws://{ip}:{port}    ← desde celular en la misma red WiFi")
+    print()
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="ECG WebSocket simulator")
     parser.add_argument("--host", default="0.0.0.0",
@@ -128,6 +169,7 @@ async def main() -> None:
     server = EcgServer(mode=args.mode, sample_rate=args.rate)
     LOG.info("starting ECG simulator on ws://%s:%d (mode=%s, rate=%dHz)",
              args.host, args.port, args.mode, args.rate)
+    _print_connection_help(args.host, args.port)
 
     async with websockets.serve(server.handle_client, args.host, args.port):
         await server.broadcast_loop()
