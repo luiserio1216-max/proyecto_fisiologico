@@ -14,7 +14,12 @@ import '../data/services/ecg_socket_service.dart';
 /// Visible window defaults to 1500 samples = 6.0 s at 250 Hz, matching the
 /// span typically shown in clinical strips.
 class EcgStreamProvider extends ChangeNotifier {
-  EcgStreamProvider(this._socket, {this.windowSize = 1500, this.beatHistory = 60}) {
+  EcgStreamProvider(
+    this._socket, {
+    this.windowSize = 1500,
+    this.beatHistory = 60,
+    this.notifyEverySamples = 4,
+  }) {
     _sampleSub = _socket.samples.listen(_onSample);
     _beatSub = _socket.beats.listen(_onBeat);
   }
@@ -22,6 +27,12 @@ class EcgStreamProvider extends ChangeNotifier {
   final EcgSocketService _socket;
   final int windowSize;
   final int beatHistory;
+
+  /// At 250 Hz, notifying on every sample would force ~250 rebuilds/sec.
+  /// Notifying every 4th sample yields ~62 Hz UI updates — visually smooth
+  /// while leaving headroom for the chart layer.
+  final int notifyEverySamples;
+  int _sinceNotify = 0;
 
   late final StreamSubscription<EcgSample> _sampleSub;
   late final StreamSubscription<Beat> _beatSub;
@@ -66,7 +77,11 @@ class EcgStreamProvider extends ChangeNotifier {
     while (_samples.length > windowSize) {
       _samples.removeFirst();
     }
-    notifyListeners();
+    _sinceNotify++;
+    if (_sinceNotify >= notifyEverySamples) {
+      _sinceNotify = 0;
+      notifyListeners();
+    }
   }
 
   void _onBeat(Beat b) {
