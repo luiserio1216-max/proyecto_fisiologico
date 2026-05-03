@@ -77,11 +77,19 @@ class EcgServer:
     async def _broadcast(self, payload: str) -> None:
         if not self.clients:
             return
+        # Snapshot the client set before iterating: handle_client may
+        # discard a client concurrently while we await client.send(),
+        # which would raise "Set changed size during iteration".
+        clients = list(self.clients)
         dead = []
-        for client in self.clients:
+        for client in clients:
             try:
                 await client.send(payload)
             except websockets.exceptions.ConnectionClosed:
+                dead.append(client)
+            except Exception as e:
+                LOG.warning("broadcast send failed for %s: %s",
+                            client.remote_address, e)
                 dead.append(client)
         for d in dead:
             self.clients.discard(d)
@@ -91,20 +99,23 @@ class EcgServer:
         sample_interval = 1.0 / self.sample_rate
         next_deadline = loop.time()
         while True:
-            mv, beat = self.generator.next_sample()
-            now = time.time()
-            await self._broadcast(json.dumps({
-                "type": "ecg_sample",
-                "ts": now,
-                "mv": round(mv, 5),
-            }))
-            if beat is not None:
+            try:
+                mv, beat = self.generator.next_sample()
+                now = time.time()
                 await self._broadcast(json.dumps({
-                    "type": "beat",
+                    "type": "ecg_sample",
                     "ts": now,
-                    "rr_ms": round(beat.rr_ms, 2),
-                    "instant_bpm": round(beat.instant_bpm, 2),
+                    "mv": round(mv, 5),
                 }))
+                if beat is not None:
+                    await self._broadcast(json.dumps({
+                        "type": "beat",
+                        "ts": now,
+                        "rr_ms": round(beat.rr_ms, 2),
+                        "instant_bpm": round(beat.instant_bpm, 2),
+                    }))
+            except Exception as e:
+                LOG.exception("broadcast tick failed; continuing: %s", e)
             next_deadline += sample_interval
             sleep_for = next_deadline - loop.time()
             if sleep_for > 0:
